@@ -11,7 +11,7 @@ namespace ImagesViewer
     /// <summary>
     /// Interaction logic for MainWindow.xaml
     /// </summary>
-    public partial class MainWindow : Window
+    public partial class MainWindow : Window, INotifyPropertyChanged
     {
         private string _windowTitle = "ImagesViewer";
         private int _currentImageIndex = -1;
