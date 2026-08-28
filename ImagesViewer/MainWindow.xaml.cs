@@ -1,10 +1,11 @@
 ﻿using ImagesViewer.Helpers;
 using Microsoft.Win32;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Media.Imaging;
+using System.Windows.Media;
 
 namespace ImagesViewer
 {
@@ -19,6 +20,16 @@ namespace ImagesViewer
         private string _oldImagesDirectory = "";
         private string _imageName = "";
         private List<string> _imagesFilesList = new();
+        private ImageCache? _imageCache;
+        private int _navigationToken;
+
+        // Assez d'images pour couvrir un aller-retour autour de la position courante sans
+        // relire le partage. Chaque entree tient la taille de l'ecran en memoire.
+        private const int CacheCapacity = 7;
+        // La lecture suivante est presque toujours la suivante dans la liste.
+        private static readonly int[] PrefetchOffsets = { 1, -1, 2 };
+
+        private ImageCache Cache => _imageCache ??= new ImageCache(CacheCapacity, GetDisplayPixelWidth());
         public string WindowTitle
         {
             get => _windowTitle;
@@ -108,38 +119,53 @@ namespace ImagesViewer
             }
         }
 
-        private BitmapImage LoadImageWithCache(string imagePath)
+        private int GetDisplayPixelWidth()
         {
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.UriSource = new Uri(imagePath, UriKind.Absolute);
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-            bitmap.EndInit();
-            bitmap.Freeze();
-            return bitmap;
+            // L'ecran borne ce qui sera visible : au-dela, les pixels decodes sont perdus.
+            var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            return (int)Math.Ceiling(SystemParameters.PrimaryScreenWidth * scale);
         }
 
-        private void ShowImage(int index)
+        private async void ShowImage(int index)
         {
             if (index < 0 || index >= _imagesFilesList.Count)
                 return;
-            var fileName = System.IO.Path.GetFileNameWithoutExtension(_imagesFilesList[index]);
+            var imagePath = _imagesFilesList[index];
+            var fileName = System.IO.Path.GetFileNameWithoutExtension(imagePath);
             _currentImageIndex = index;
             WindowTitle = string.IsNullOrEmpty(fileName) ? "ImagesViewer" : $"ImagesViewer - {fileName}";
 
+            // Les chargements ne se terminent pas dans l'ordre ou ils partent : seule la
+            // derniere image demandee doit etre peinte, sinon une image deja quittee
+            // vient recouvrir la courante.
+            var token = ++_navigationToken;
             try
             {
-                var bitmap = LoadImageWithCache(_imagesFilesList[index]);
+                var bitmap = await Cache.GetAsync(imagePath);
+                if (token != _navigationToken)
+                    return;
                 BroadcastedImage.Source = bitmap;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Erreur chargement image : {ex.Message}");
-                var bitmap = new BitmapImage(new Uri(_imagesFilesList[index]));
-                BroadcastedImage.Source = bitmap;
+                Debug.WriteLine($"Erreur chargement image : {ex}");
+                if (token != _navigationToken)
+                    return;
+                MessageBox.Show($"Impossible d'afficher l'image {fileName}.", "Erreur", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
             }
 
+            Prefetch(index);
+        }
+
+        private void Prefetch(int index)
+        {
+            foreach (var offset in PrefetchOffsets)
+            {
+                var neighbour = index + offset;
+                if (neighbour >= 0 && neighbour < _imagesFilesList.Count)
+                    Cache.Prefetch(_imagesFilesList[neighbour]);
+            }
         }
 
         private void OnShortcutPressed(Key key)
